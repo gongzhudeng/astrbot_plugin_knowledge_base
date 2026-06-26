@@ -6,7 +6,7 @@
 
 > 作者：灵犀 | 仓库：[astrbot_plugin_knowledge_base](https://github.com/gongzhudeng/astrbot_plugin_knowledge_base) | 主页：[gongzhudeng](https://github.com/gongzhudeng)
 
-> **版本**：v1.0.4
+> **版本**：v1.0.5
 > **插件名**：`astrbot_plugin_knowledge_base`
 
 基于 [lxfight/astrbot_plugin_knowledge_base v0.5.9](https://github.com/lxfight/astrbot_plugin_knowledge_base) 改编，感谢原作者 lxfight 的开源贡献。
