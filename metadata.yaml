@@ -5,7 +5,7 @@ desc: >
   基于 lxfight/astrbot_plugin_knowledge_base v0.5.9 改编，优化了知识库内容注入位置，
   使其插入在忙碌日程插件之后，避免破坏 KV Cache 前缀。
 help: 输入 /kb help 查看指令帮助
-version: v1.0.0
+version: v1.0.1
 author: 灵犀
 repo: https://github.com/gongzhudeng/astrbot_plugin_knowledge_base
 credits: |
