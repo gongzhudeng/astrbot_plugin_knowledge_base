@@ -171,9 +171,9 @@ async def enhance_request_with_kb(
                 f"知识库内容已插入到 system_prompt 的忙碌日程块之后。长度: {len(knowledge_to_insert)}"
             )
         elif req.system_prompt:
-            req.system_prompt = f"{knowledge_to_insert}\n\n{req.system_prompt}"
+            req.system_prompt = f"{req.system_prompt}\n\n{knowledge_to_insert}"
             logger.info(
-                f"知识库内容已添加到 system_prompt（无忙碌日程块，前置）。长度: {len(knowledge_to_insert)}"
+                f"知识库内容已添加到 system_prompt（无忙碌日程块，追加到末尾）。长度: {len(knowledge_to_insert)}"
             )
         else:
             req.system_prompt = knowledge_to_insert
