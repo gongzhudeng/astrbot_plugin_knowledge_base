@@ -6,7 +6,7 @@
 
 > 作者：灵犀 | 仓库：[astrbot_plugin_knowledge_base](https://github.com/gongzhudeng/astrbot_plugin_knowledge_base) | 主页：[gongzhudeng](https://github.com/gongzhudeng)
 
-> **版本**：v1.0.0
+> **版本**：v1.0.4
 > **插件名**：`astrbot_plugin_knowledge_base`
 
 基于 [lxfight/astrbot_plugin_knowledge_base v0.5.9](https://github.com/lxfight/astrbot_plugin_knowledge_base) 改编，感谢原作者 lxfight 的开源贡献。
@@ -17,8 +17,8 @@
 
 ### 核心功能
 - **知识库检索**：根据用户消息自动检索相关知识库内容
-- **智能注入**：将检索结果注入到 system_prompt 中忙碌日程块之后
-- **多种注入方式**：支持 system_prompt 注入和用户消息前置注入
+- **注入位置调整**：默认注入到用户消息前面，避免破坏 KV Cache 前缀，提高缓存命中率
+- **多种注入方式**：支持用户消息前置注入（推荐）和 system_prompt 注入
 - **相关度过滤**：可配置最低相似度阈值，过滤不相关的内容
 
 ### 知识库管理
@@ -48,8 +48,8 @@ AstrBot/data/plugins/astrbot_plugin_knowledge_base/
 
 | 方式 | 说明 |
 |------|------|
-| `system_prompt` | 注入到 system_prompt 中忙碌日程块之后（推荐，对 KV Cache 友好） |
-| `prepend_prompt` | 前置到用户消息最前面 |
+| `prepend_prompt` | 前置到用户消息最前面（**推荐**，对 KV Cache 友好） |
+| `system_prompt` | 注入到 system_prompt 中忙碌日程块之后 |
 
 ---
 
