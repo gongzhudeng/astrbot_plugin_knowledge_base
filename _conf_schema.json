@@ -84,6 +84,12 @@
         "type": "int",
         "default": 3
     },
+    "kb_llm_insertion_method": {
+        "description": "知识库内容注入方式：system_prompt（推荐，对KV Cache友好）或 prepend_prompt（前置到用户消息）",
+        "type": "string",
+        "default": "system_prompt",
+        "options": ["system_prompt", "prepend_prompt"]
+    },
     "auto_create_collection": {
         "description": "当指定的知识库集合不存在时，是否自动创建",
         "type": "bool",
