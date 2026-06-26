@@ -88,7 +88,7 @@ async def enhance_request_with_kb(
         return
 
     kb_search_top_k = plugin_config.get("kb_llm_search_top_k", 3)
-    kb_insertion_method = plugin_config.get("kb_llm_insertion_method", "prepend_prompt")
+    kb_insertion_method = plugin_config.get("kb_llm_insertion_method", "system_prompt")
     kb_context_template = plugin_config.get(
         "kb_llm_context_template",
         "这是相关的知识库信息，请参考这些信息来回答用户的问题：\n{retrieved_contexts}",
