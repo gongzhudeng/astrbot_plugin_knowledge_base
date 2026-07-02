@@ -211,7 +211,7 @@ class KnowledgeBasePlugin(Star):
         return True
 
     # --- LLM Request Hook ---
-    @filter.on_llm_request()
+    @filter.on_llm_request(priority=-10)
     async def kb_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not await self._ensure_initialized():
             logger.warning("LLM 请求时知识库插件未初始化，跳过知识库增强。")
