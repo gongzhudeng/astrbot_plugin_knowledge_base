@@ -31,7 +31,7 @@ from .vector_store.milvus_lite_store import MilvusLiteStore
 from .vector_store.milvus_store import MilvusStore
 from .web_api import KnowledgeBaseWebAPI
 from .core.user_prefs_handler import UserPrefsHandler
-from .core.llm_enhancer import clean_contexts_from_kb_content, enhance_request_with_kb
+from .core.llm_enhancer import enhance_request_with_kb
 from .commands import (
     general_commands,
     add_commands,
@@ -216,8 +216,6 @@ class KnowledgeBasePlugin(Star):
         if not await self._ensure_initialized():
             logger.warning("LLM 请求时知识库插件未初始化，跳过知识库增强。")
             return
-
-        clean_contexts_from_kb_content(req)
 
         await enhance_request_with_kb(
             event, req, self.vector_db, self.user_prefs_handler, self.config

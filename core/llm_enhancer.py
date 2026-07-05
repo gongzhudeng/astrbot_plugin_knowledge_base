@@ -4,68 +4,11 @@ from typing import TYPE_CHECKING
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
-from .constants import KB_START_MARKER, KB_END_MARKER, USER_PROMPT_DELIMITER_IN_HISTORY
+from astrbot.core.agent.message import TextPart
 
 if TYPE_CHECKING:
     from ..vector_store.base import VectorDBBase
     from .user_prefs_handler import UserPrefsHandler
-
-
-def clean_contexts_from_kb_content(req: ProviderRequest):
-    """
-    自动删除 req.contexts 里面由知识库补充的历史对话内容。
-    """
-    if not req.contexts:
-        return
-
-    cleaned_contexts = []
-    initial_context_count = len(req.contexts)
-
-    for message in req.contexts:
-        role = message.get("role")
-        content = message.get("content", "")
-
-        if role == "system" and KB_START_MARKER in content:
-            logger.debug(
-                f"从历史对话中检测到并删除知识库 system 消息: {content[:100]}..."
-            )
-            continue
-        elif role == "user" and KB_START_MARKER in content:
-            start_marker_idx = content.find(KB_START_MARKER)
-            end_marker_idx = content.find(KB_END_MARKER, start_marker_idx)
-            if start_marker_idx != -1 and end_marker_idx != -1:
-                original_prompt_delimiter_idx = content.find(
-                    USER_PROMPT_DELIMITER_IN_HISTORY,
-                    end_marker_idx + len(KB_END_MARKER),
-                )
-                if original_prompt_delimiter_idx != -1:
-                    original_user_prompt = content[
-                        original_prompt_delimiter_idx
-                        + len(USER_PROMPT_DELIMITER_IN_HISTORY) :
-                    ].strip()
-                    message["content"] = original_user_prompt
-                    cleaned_contexts.append(message)
-                    logger.debug(
-                        f"从历史对话 user 消息中清理知识库内容，保留原用户问题: {original_user_prompt[:100]}..."
-                    )
-                else:
-                    logger.warning(
-                        f"用户消息中检测到知识库标记但缺少原始用户问题分隔符，删除该消息: {content[:100]}..."
-                    )
-                    continue
-            else:
-                logger.warning(
-                    f"用户消息中检测到知识库起始标记但缺少结束标记，删除该消息: {content[:100]}..."
-                )
-                continue
-        else:
-            cleaned_contexts.append(message)
-
-    req.contexts = cleaned_contexts
-    if len(req.contexts) < initial_context_count:
-        logger.info(
-            f"成功从历史对话中删除了 {initial_context_count - len(req.contexts)} 条知识库补充消息。"
-        )
 
 
 async def enhance_request_with_kb(
@@ -144,9 +87,7 @@ async def enhance_request_with_kb(
         retrieved_contexts=formatted_contexts
     )
 
-    max_kb_insert_length = plugin_config.get(
-        "kb_llm_max_insert_length", 200000
-    )  # Increased limit as per original
+    max_kb_insert_length = plugin_config.get("kb_llm_max_insert_length", 200000)
     if len(knowledge_to_insert) > max_kb_insert_length:
         logger.warning(
             f"知识库插入内容过长 ({len(knowledge_to_insert)} chars)，将被截断至 {max_kb_insert_length} chars。"
@@ -155,10 +96,8 @@ async def enhance_request_with_kb(
             knowledge_to_insert[:max_kb_insert_length] + "\n... [内容已截断]"
         )
 
-    knowledge_to_insert = f"{KB_START_MARKER}\n{knowledge_to_insert}\n{KB_END_MARKER}"
-
     if kb_insertion_method == "system_prompt":
-        # Insert after busy_schedule cache block if it exists, otherwise prepend
+        # Insert after busy_schedule cache block if it exists, otherwise append
         busy_schedule_end = "<!-- /BUSY_SCHEDULE_CACHE -->"
         if busy_schedule_end in req.system_prompt:
             idx = req.system_prompt.index(busy_schedule_end) + len(busy_schedule_end)
@@ -178,19 +117,22 @@ async def enhance_request_with_kb(
         else:
             req.system_prompt = knowledge_to_insert
     elif kb_insertion_method == "prepend_prompt":
-        req.prompt = (
-            f"{knowledge_to_insert}\n\n{USER_PROMPT_DELIMITER_IN_HISTORY}{req.prompt}"
+        # Inject as a temporary content part: visible to LLM this turn,
+        # but never written into req.contexts or persistent history.
+        req.extra_user_content_parts.append(
+            TextPart(text=knowledge_to_insert).mark_as_temp()
         )
-        logger.info(f"知识库内容已前置到用户 prompt。长度: {len(knowledge_to_insert)}")
+        logger.info(
+            f"知识库内容已注入为临时用户内容块（不写入历史）。长度: {len(knowledge_to_insert)}"
+        )
     else:
         logger.warning(
-            f"未知的知识库内容插入方式: {kb_insertion_method}，将默认前置到用户 prompt。"
+            f"未知的知识库内容插入方式: {kb_insertion_method}，将默认注入为临时用户内容块。"
         )
-        req.prompt = (
-            f"{knowledge_to_insert}\n\n{USER_PROMPT_DELIMITER_IN_HISTORY}{req.prompt}"
+        req.extra_user_content_parts.append(
+            TextPart(text=knowledge_to_insert).mark_as_temp()
         )
 
-    logger.debug(f"修改后的 ProviderRequest.prompt: {req.prompt[:200]}...")
     if req.system_prompt:
         logger.debug(
             f"修改后的 ProviderRequest.system_prompt: {req.system_prompt[:200]}..."

@@ -6,7 +6,7 @@
 
 > 作者：灵犀 | 仓库：[astrbot_plugin_knowledge_base](https://github.com/gongzhudeng/astrbot_plugin_knowledge_base) | 主页：[gongzhudeng](https://github.com/gongzhudeng)
 
-> **版本**：v1.0.5
+> **版本**：v1.0.6
 > **插件名**：`astrbot_plugin_knowledge_base`
 
 基于 [lxfight/astrbot_plugin_knowledge_base v0.5.9](https://github.com/lxfight/astrbot_plugin_knowledge_base) 改编，感谢原作者 lxfight 的开源贡献。
@@ -221,6 +221,37 @@ MIT
   <p>我们致力于让 AstrBot 知识库插件越来越好用！以下是近期的主要更新：</p>
 </div>
 
+
+<details open>
+  <summary>
+    <h3>✨ v1.0.6 - 知识库注入无痕化</h3>
+  </summary>
+  <blockquote>
+    <p>将知识库内容的注入方式从"拼接到用户消息"改为使用 AstrBot 原生临时内容块（<code>extra_user_content_parts</code>），彻底解决知识库内容污染长期记忆的问题。</p>
+  </blockquote>
+  <ul>
+    <li>
+      <p>🧹 <strong>[架构优化] 知识库内容不再写入对话历史</strong></p>
+      <ul>
+        <li><strong>问题</strong>：旧版 <code>prepend_prompt</code> 方式将知识库检索结果直接拼接到 <code>req.prompt</code> 前，导致该内容被写入对话历史，livingmemory 等记忆插件可能将知识库文档内容误当作用户发言摘要进长期记忆。</li>
+        <li><strong>方案</strong>：改用 <code>req.extra_user_content_parts.append(TextPart(...).mark_as_temp())</code>，知识库内容仅当轮对 LLM 可见，框架保证其不写入持久化历史。</li>
+        <li><strong>效果</strong>：长期记忆保持干净，无需维护 <code>KB_START_MARKER</code>/<code>KB_END_MARKER</code> 标记和事后清理逻辑，边界 bug 风险归零。</li>
+      </ul>
+    </li>
+    <li>
+      <p>🗑️ <strong>[删除] 移除标记清理逻辑</strong></p>
+      <ul>
+        <li>删除 <code>clean_contexts_from_kb_content</code> 函数及相关常量引用，代码量减少，维护复杂度降低。</li>
+      </ul>
+    </li>
+    <li>
+      <p>⚡ <strong>[兼容] prefix cache 更友好</strong></p>
+      <ul>
+        <li><code>system_prompt</code> 完全不受影响，<code>prepend_prompt</code> 配置项语义不变，升级无需修改任何配置。</li>
+      </ul>
+    </li>
+  </ul>
+</details>
 
 <details open>
    <summary>
