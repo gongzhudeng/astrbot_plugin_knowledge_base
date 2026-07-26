@@ -62,7 +62,6 @@ class UserPrefsHandler:
         # 小于 4.0.0 版本使用插件配置中的默认知识库
         return self.config.get("default_collection_name", "general")
 
-
     async def set_user_default_collection(
         self, event: AstrMessageEvent, collection_name: str
     ) -> AsyncGenerator[AstrMessageEvent, None]:

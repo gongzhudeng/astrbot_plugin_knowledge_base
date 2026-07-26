@@ -84,6 +84,17 @@
         "type": "int",
         "default": 3
     },
+    "kb_llm_min_similarity_score": {
+        "description": "自动注入知识库内容的最低相关度",
+        "type": "float",
+        "default": 0.5,
+        "hint": "范围 0-1，仅注入相关度达到此值的结果；设为 0 可关闭过滤。更换 Embedding、Rerank 或向量数据库后建议重新校准。",
+        "slider": {
+            "min": 0,
+            "max": 1,
+            "step": 0.01
+        }
+    },
     "kb_llm_insertion_method": {
         "description": "知识库内容注入方式：prepend_prompt（推荐，前置到用户消息，对KV Cache友好）或 system_prompt（注入到系统提示词）",
         "type": "string",

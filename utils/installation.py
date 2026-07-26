@@ -100,7 +100,9 @@ def _check_and_install_package_uv(
                     logger.info(f"信息: {friendly_name} 通过 UV 成功安装，现在可用。")
                     return True
                 except ImportError:
-                    logger.error(f"错误: {friendly_name} 报告已通过 UV 安装，但仍无法导入。")
+                    logger.error(
+                        f"错误: {friendly_name} 报告已通过 UV 安装，但仍无法导入。"
+                    )
                     return False
             else:
                 return False
@@ -140,7 +142,9 @@ def ensure_vector_db_dependencies(
         "numpy", ">=2.2.0", friendly_name="Numpy"
     )
     core_deps_ok &= _check_and_install_package_uv(
-        "markitdown_no_magika", ">=0.1.0", friendly_name="markitdown-no-magika[pptx,docx,xlsx,xls,pdf]"
+        "markitdown_no_magika",
+        ">=0.1.0",
+        friendly_name="markitdown-no-magika[pptx,docx,xlsx,xls,pdf]",
     )
 
     if not core_deps_ok:

@@ -1,7 +1,8 @@
 # astrbot_plugin_knowledge_base/llm_enhancer.py
+import math
 from typing import TYPE_CHECKING
 
-from astrbot.api import logger, AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.agent.message import TextPart
@@ -9,6 +10,34 @@ from astrbot.core.agent.message import TextPart
 if TYPE_CHECKING:
     from ..vector_store.base import VectorDBBase
     from .user_prefs_handler import UserPrefsHandler
+
+
+_DEFAULT_MIN_SIMILARITY_SCORE = 0.5
+
+
+def _parse_min_similarity_score(raw_score: object) -> float:
+    try:
+        score = float(raw_score)
+    except (TypeError, ValueError):
+        logger.warning(
+            "知识库最低相关度配置无效，使用默认值 "
+            f"{_DEFAULT_MIN_SIMILARITY_SCORE}: {raw_score!r}"
+        )
+        return _DEFAULT_MIN_SIMILARITY_SCORE
+
+    if not math.isfinite(score):
+        logger.warning(
+            "知识库最低相关度配置不是有限数值，使用默认值 "
+            f"{_DEFAULT_MIN_SIMILARITY_SCORE}: {raw_score!r}"
+        )
+        return _DEFAULT_MIN_SIMILARITY_SCORE
+
+    clamped_score = max(0.0, min(1.0, score))
+    if clamped_score != score:
+        logger.warning(
+            f"知识库最低相关度配置 {score} 超出 0-1，已调整为 {clamped_score}。"
+        )
+    return clamped_score
 
 
 async def enhance_request_with_kb(
@@ -25,9 +54,7 @@ async def enhance_request_with_kb(
         return
 
     if not await vector_db.collection_exists(default_collection_name):
-        logger.warning(
-            f"知识库 '{default_collection_name}' 不存在，跳过知识库查询。"
-        )
+        logger.warning(f"知识库 '{default_collection_name}' 不存在，跳过知识库查询。")
         return
 
     kb_search_top_k = plugin_config.get("search_top_k", 3)
@@ -36,9 +63,17 @@ async def enhance_request_with_kb(
         "kb_llm_context_template",
         "这是相关的知识库信息，请参考这些信息来回答用户的问题：\n{retrieved_contexts}",
     )
-    min_similarity_score = plugin_config.get("kb_llm_min_similarity_score", 0.5)
+    min_similarity_score = _parse_min_similarity_score(
+        plugin_config.get("kb_llm_min_similarity_score", _DEFAULT_MIN_SIMILARITY_SCORE)
+    )
 
-    user_query = req.prompt
+    background_query = event.get_extra("retrieval_query")
+    is_background_retrieval = bool(event.get_extra("background_retrieval"))
+    user_query = (
+        background_query.strip()
+        if is_background_retrieval and isinstance(background_query, str)
+        else req.prompt
+    )
     if not user_query or not user_query.strip():
         logger.debug("用户查询为空，跳过知识库搜索。")
         return
@@ -64,8 +99,25 @@ async def enhance_request_with_kb(
         return
 
     retrieved_contexts_list = []
-    for doc, score in search_results:
-        if score >= min_similarity_score:
+    candidate_scores = []
+    for doc, raw_score in search_results:
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"文档 '{doc.text_content[:30]}...' 返回了无效相关度 "
+                f"{raw_score!r}，已忽略。"
+            )
+            continue
+        if not math.isfinite(score):
+            logger.warning(
+                f"文档 '{doc.text_content[:30]}...' 返回了非有限相关度 "
+                f"{raw_score!r}，已忽略。"
+            )
+            continue
+
+        candidate_scores.append(score)
+        if min_similarity_score == 0 or score >= min_similarity_score:
             source_info = doc.metadata.get("source", "未知来源")
             context_item = (
                 f"- 内容: {doc.text_content} (来源: {source_info}, 相关度: {score:.2f})"
@@ -73,8 +125,16 @@ async def enhance_request_with_kb(
             retrieved_contexts_list.append(context_item)
         else:
             logger.debug(
-                f"文档 '{doc.text_content[:30]}...' 相关度 {score:.2f} 低于阈值 {min_similarity_score}，已忽略。"
+                f"文档 '{doc.text_content[:30]}...' 相关度 {score:.2f} "
+                f"低于阈值 {min_similarity_score:.2f}，已忽略。"
             )
+
+    logger.info(
+        f"知识库相关度筛选: 后端={type(vector_db).__name__}, "
+        f"候选={len(search_results)}, 通过={len(retrieved_contexts_list)}, "
+        f"阈值={min_similarity_score:.2f}, "
+        f"分数={[round(score, 4) for score in candidate_scores]}"
+    )
 
     if not retrieved_contexts_list:
         logger.info(
@@ -95,6 +155,13 @@ async def enhance_request_with_kb(
         knowledge_to_insert = (
             knowledge_to_insert[:max_kb_insert_length] + "\n... [内容已截断]"
         )
+
+    if is_background_retrieval:
+        results = event.get_extra("background_retrieval_results")
+        if not isinstance(results, list):
+            results = []
+        results.append(knowledge_to_insert)
+        event.set_extra("background_retrieval_results", results)
 
     if kb_insertion_method == "system_prompt":
         # Insert after busy_schedule cache block if it exists, otherwise append
