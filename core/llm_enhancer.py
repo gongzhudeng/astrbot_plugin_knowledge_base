@@ -9,6 +9,7 @@ from astrbot.core.agent.message import TextPart
 
 if TYPE_CHECKING:
     from ..vector_store.base import VectorDBBase
+    from .retrieval import HybridSearchService
     from .user_prefs_handler import UserPrefsHandler
 
 
@@ -40,12 +41,32 @@ def _parse_min_similarity_score(raw_score: object) -> float:
     return clamped_score
 
 
+def _parse_positive_int(raw_value: object, fallback: int) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback
+
+
+def _score_passes_threshold(
+    doc: object,
+    score: float,
+    min_similarity_score: float,
+) -> bool:
+    metadata = getattr(doc, "metadata", {}) or {}
+    if metadata.get("_score_type") == "sparse_bm25":
+        return score > 0
+    return min_similarity_score == 0 or score >= min_similarity_score
+
+
 async def enhance_request_with_kb(
     event: AstrMessageEvent,
     req: ProviderRequest,
     vector_db: "VectorDBBase",
     user_prefs_handler: "UserPrefsHandler",
     plugin_config: AstrBotConfig,
+    retrieval_service: "HybridSearchService | None" = None,
 ):
     default_collection_name = user_prefs_handler.get_user_default_collection(event)
 
@@ -82,8 +103,16 @@ async def enhance_request_with_kb(
         logger.info(
             f"为LLM请求在知识库 '{default_collection_name}' 中搜索: '{user_query[:50]}...' (top_k={kb_search_top_k})"
         )
-        search_results = await vector_db.search(
-            default_collection_name, user_query, top_k=kb_search_top_k
+        search_results = (
+            await retrieval_service.search(
+                default_collection_name,
+                user_query,
+                top_k=kb_search_top_k,
+            )
+            if retrieval_service is not None
+            else await vector_db.search(
+                default_collection_name, user_query, top_k=kb_search_top_k
+            )
         )
     except Exception as e:
         logger.error(
@@ -100,7 +129,15 @@ async def enhance_request_with_kb(
 
     retrieved_contexts_list = []
     candidate_scores = []
+    seen_contents = set()
+    max_contexts = _parse_positive_int(
+        plugin_config.get("kb_llm_max_contexts", 10),
+        10,
+    )
     for doc, raw_score in search_results:
+        normalized_content = doc.text_content.strip()
+        if not normalized_content or normalized_content in seen_contents:
+            continue
         try:
             score = float(raw_score)
         except (TypeError, ValueError):
@@ -117,12 +154,15 @@ async def enhance_request_with_kb(
             continue
 
         candidate_scores.append(score)
-        if min_similarity_score == 0 or score >= min_similarity_score:
+        if _score_passes_threshold(doc, score, min_similarity_score):
             source_info = doc.metadata.get("source", "未知来源")
             context_item = (
                 f"- 内容: {doc.text_content} (来源: {source_info}, 相关度: {score:.2f})"
             )
             retrieved_contexts_list.append(context_item)
+            seen_contents.add(normalized_content)
+            if len(retrieved_contexts_list) >= max_contexts:
+                break
         else:
             logger.debug(
                 f"文档 '{doc.text_content[:30]}...' 相关度 {score:.2f} "
@@ -147,14 +187,22 @@ async def enhance_request_with_kb(
         retrieved_contexts=formatted_contexts
     )
 
-    max_kb_insert_length = plugin_config.get("kb_llm_max_insert_length", 200000)
+    max_kb_insert_length = _parse_positive_int(
+        plugin_config.get("kb_llm_max_insert_length", 200000),
+        200000,
+    )
     if len(knowledge_to_insert) > max_kb_insert_length:
         logger.warning(
             f"知识库插入内容过长 ({len(knowledge_to_insert)} chars)，将被截断至 {max_kb_insert_length} chars。"
         )
-        knowledge_to_insert = (
-            knowledge_to_insert[:max_kb_insert_length] + "\n... [内容已截断]"
-        )
+        truncation_marker = "\n... [内容已截断]"
+        if max_kb_insert_length <= len(truncation_marker):
+            knowledge_to_insert = knowledge_to_insert[:max_kb_insert_length]
+        else:
+            knowledge_to_insert = (
+                knowledge_to_insert[: max_kb_insert_length - len(truncation_marker)]
+                + truncation_marker
+            )
 
     if is_background_retrieval:
         results = event.get_extra("background_retrieval_results")

@@ -1,9 +1,10 @@
 # astrbot_plugin_knowledge_base/main.py
 import os
 import asyncio
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Sequence
 
-from astrbot.api import logger, AstrBotConfig
+from astrbot.api import logger, AstrBotConfig, sp
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.session_waiter import (
@@ -20,7 +21,7 @@ from .utils.installation import ensure_vector_db_dependencies
 from .utils.embedding import EmbeddingUtil, EmbeddingSolutionHelper
 from .utils.text_splitter import TextSplitterUtil
 from .utils.file_parser import FileParser, LLM_Config
-from .vector_store.base import VectorDBBase
+from .vector_store.base import Document, VectorDBBase
 
 if VERSION < "3.5.13":
     logger.info("建议升级至 AstrBot v3.5.13 或更高版本。")
@@ -32,6 +33,7 @@ from .vector_store.milvus_store import MilvusStore
 from .web_api import KnowledgeBaseWebAPI
 from .core.user_prefs_handler import UserPrefsHandler
 from .core.llm_enhancer import enhance_request_with_kb
+from .core.retrieval import HybridSearchService, maybe_search
 from .commands import (
     general_commands,
     add_commands,
@@ -44,8 +46,8 @@ from .commands import (
     constants.PLUGIN_REGISTER_NAME,
     "lxfight",
     "一个支持多种向量数据库的知识库插件",
-    "0.5.4",
-    "https://github.com/lxfight/astrbot_plugin_knowledge_base",
+    "1.1.0",
+    "https://github.com/gongzhudeng/astrbot_plugin_knowledge_base",
 )
 class KnowledgeBasePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -58,6 +60,7 @@ class KnowledgeBasePlugin(Star):
         self.text_splitter: Optional[TextSplitterUtil] = None
         self.file_parser: Optional[FileParser] = None
         self.user_prefs_handler: Optional[UserPrefsHandler] = None
+        self.retrieval_service: Optional[HybridSearchService] = None
 
         ensure_vector_db_dependencies(self.config.get("vector_db_type", "faiss"))
         self.init_task = asyncio.create_task(self._initialize_components())
@@ -123,8 +126,8 @@ class KnowledgeBasePlugin(Star):
 
             # Text Splitter
             self.text_splitter = TextSplitterUtil(
-                chunk_size=self.config.get("text_chunk_size"),
-                chunk_overlap=self.config.get("text_chunk_overlap"),
+                chunk_size=self.config.get("text_chunk_size", 300),
+                chunk_overlap=self.config.get("text_chunk_overlap", 100),
             )
             logger.info("文本分割工具初始化完成。")
 
@@ -172,6 +175,28 @@ class KnowledgeBasePlugin(Star):
                 await self.vector_db.initialize()
                 logger.info(f"向量数据库 '{db_type}' 初始化完成。")
 
+            sparse_index_path = (
+                Path(self.persistent_data_root_path) / "sparse_index.sqlite3"
+            )
+            if self.config.get("hybrid_retrieval_enabled", True):
+                try:
+                    self.retrieval_service = HybridSearchService(
+                        self.vector_db,
+                        sparse_index_path,
+                        self.config,
+                    )
+                    await self.retrieval_service.initialize()
+                    logger.info(
+                        "混合检索服务初始化完成。旧集合将在缺少 BM25 索引时自动回退。"
+                    )
+                except Exception as exc:
+                    self.retrieval_service = None
+                    logger.warning(
+                        "混合检索服务初始化失败，将继续使用向量检索: %s",
+                        exc,
+                        exc_info=True,
+                    )
+
             self.user_prefs_handler.vector_db = self.vector_db
 
             # Web API
@@ -182,6 +207,7 @@ class KnowledgeBasePlugin(Star):
                     astrbot_context=self.context,
                     llm_config=self.llm_config,
                     user_prefs_handler=self.user_prefs_handler,
+                    retrieval_service=self.retrieval_service,
                     plugin_config=self.config,
                 )
             except Exception as e:
@@ -210,6 +236,56 @@ class KnowledgeBasePlugin(Star):
             return False
         return True
 
+    async def add_documents(
+        self,
+        collection_name: str,
+        documents: Sequence[Document],
+    ) -> list[str]:
+        if self.retrieval_service is not None:
+            return await self.retrieval_service.add_documents(
+                collection_name, documents
+            )
+        return await self.vector_db.add_documents(collection_name, list(documents))
+
+    async def search_documents(
+        self,
+        collection_name: str,
+        query: str,
+        top_k: int,
+    ) -> list[tuple[Document, float]]:
+        return await maybe_search(
+            self.vector_db,
+            self.retrieval_service,
+            collection_name,
+            query,
+            top_k,
+        )
+
+    async def delete_documents_collection(self, collection_name: str) -> bool:
+        if self.retrieval_service is not None:
+            return await self.retrieval_service.delete_collection(collection_name)
+        return await self.vector_db.delete_collection(collection_name)
+
+    async def _warn_if_builtin_kb_enabled(self, event: AstrMessageEvent) -> None:
+        try:
+            config = self.context.get_config(umo=event.unified_msg_origin)
+            session_config = await sp.session_get(
+                event.unified_msg_origin,
+                "kb_config",
+                default={},
+            )
+            global_kb_names = config.get("kb_names", [])
+            if isinstance(session_config, dict) and "kb_ids" in session_config:
+                builtin_kb_enabled = bool(session_config.get("kb_ids", []))
+            else:
+                builtin_kb_enabled = bool(global_kb_names)
+            if builtin_kb_enabled:
+                logger.warning(
+                    "插件知识库与 AstrBot 内置知识库同时启用，当前请求可能发生双重检索。"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("检查 AstrBot 内置知识库配置失败: %s", exc)
+
     # --- LLM Request Hook ---
     @filter.on_llm_request(priority=-10)
     async def kb_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -217,8 +293,14 @@ class KnowledgeBasePlugin(Star):
             logger.warning("LLM 请求时知识库插件未初始化，跳过知识库增强。")
             return
 
+        await self._warn_if_builtin_kb_enabled(event)
         await enhance_request_with_kb(
-            event, req, self.vector_db, self.user_prefs_handler, self.config
+            event,
+            req,
+            self.vector_db,
+            self.user_prefs_handler,
+            self.config,
+            self.retrieval_service,
         )
 
     # --- Command Groups & Commands ---

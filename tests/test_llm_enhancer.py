@@ -23,14 +23,27 @@ def test_parse_min_similarity_score(raw_score, expected):
     assert _parse_min_similarity_score(raw_score) == expected
 
 
-def _make_dependencies(scores, threshold=None):
+def _make_dependencies(
+    scores,
+    threshold=None,
+    extras=None,
+    retrieval_service=None,
+    max_contexts=None,
+    max_insert_length=None,
+):
     event = Mock()
-    event.get_extra = Mock(return_value=None)
-    event.set_extra = Mock()
+    event_extras = dict(extras or {})
+    event.get_extra = Mock(
+        side_effect=lambda key, default=None: event_extras.get(key, default)
+    )
+    event.set_extra = Mock(
+        side_effect=lambda key, value: event_extras.__setitem__(key, value)
+    )
 
     req = SimpleNamespace(
         prompt="current query",
-        system_prompt="",
+        system_prompt="original system prompt",
+        contexts=[{"role": "user", "content": "history"}],
         extra_user_content_parts=[],
     )
 
@@ -58,8 +71,182 @@ def _make_dependencies(scores, threshold=None):
     }
     if threshold is not None:
         config["kb_llm_min_similarity_score"] = threshold
+    if max_contexts is not None:
+        config["kb_llm_max_contexts"] = max_contexts
+    if max_insert_length is not None:
+        config["kb_llm_max_insert_length"] = max_insert_length
 
-    return event, req, vector_db, user_prefs, config
+    return (
+        event,
+        req,
+        vector_db,
+        user_prefs,
+        config,
+        event_extras,
+        retrieval_service,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompt", "expected_query"),
+    [
+        ("current query", "current query"),
+        ("Spark retrieval query", "Spark retrieval query"),
+    ],
+)
+async def test_request_query_uses_prompt_and_keeps_injection_temporary(
+    prompt, expected_query
+):
+    retrieval_service = Mock()
+    retrieval_service.search = AsyncMock(
+        return_value=[
+            (
+                SimpleNamespace(
+                    text_content="knowledge result",
+                    metadata={"source": "test"},
+                ),
+                0.9,
+            )
+        ]
+    )
+    event, req, vector_db, user_prefs, config, _, _ = _make_dependencies(
+        [], retrieval_service=retrieval_service
+    )
+    req.prompt = prompt
+    original_contexts = list(req.contexts)
+    original_system_prompt = req.system_prompt
+
+    await enhance_request_with_kb(
+        event,
+        req,
+        vector_db,
+        user_prefs,
+        config,
+        retrieval_service,
+    )
+
+    retrieval_service.search.assert_awaited_once_with(
+        "general", expected_query, top_k=3
+    )
+    assert vector_db.search.await_count == 0
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]._no_save is True
+    assert req.prompt == prompt
+    assert req.contexts == original_contexts
+    assert req.system_prompt == original_system_prompt
+
+
+@pytest.mark.asyncio
+async def test_background_retrieval_uses_override_and_accumulates_results():
+    retrieval_service = Mock()
+    retrieval_service.search = AsyncMock(
+        return_value=[
+            (
+                SimpleNamespace(
+                    text_content="busy schedule knowledge",
+                    metadata={"source": "schedule"},
+                ),
+                0.9,
+            )
+        ]
+    )
+    extras = {
+        "background_retrieval": True,
+        "retrieval_query": "busy schedule query",
+        "background_retrieval_results": ["previous result"],
+    }
+    event, req, vector_db, user_prefs, config, event_extras, _ = _make_dependencies(
+        [], extras=extras, retrieval_service=retrieval_service
+    )
+
+    await enhance_request_with_kb(
+        event,
+        req,
+        vector_db,
+        user_prefs,
+        config,
+        retrieval_service,
+    )
+
+    retrieval_service.search.assert_awaited_once_with(
+        "general", "busy schedule query", top_k=3
+    )
+    assert event_extras["background_retrieval_results"] == [
+        "previous result",
+        req.extra_user_content_parts[0].text,
+    ]
+    assert req.extra_user_content_parts[0]._no_save is True
+    assert req.system_prompt == "original system prompt"
+    assert req.contexts == [{"role": "user", "content": "history"}]
+
+
+@pytest.mark.asyncio
+async def test_injection_deduplicates_and_respects_limits():
+    event, req, vector_db, user_prefs, config, _, _ = _make_dependencies(
+        [], max_contexts=1, max_insert_length=80
+    )
+    vector_db.search.return_value = [
+        (
+            SimpleNamespace(
+                text_content="same knowledge " * 10,
+                metadata={"source": "first"},
+            ),
+            0.9,
+        ),
+        (
+            SimpleNamespace(
+                text_content="same knowledge " * 10,
+                metadata={"source": "duplicate"},
+            ),
+            0.8,
+        ),
+    ]
+
+    await enhance_request_with_kb(event, req, vector_db, user_prefs, config)
+
+    assert len(req.extra_user_content_parts) == 1
+    assert len(req.extra_user_content_parts[0].text) == 80
+    assert req.extra_user_content_parts[0]._no_save is True
+
+
+@pytest.mark.asyncio
+async def test_sparse_only_result_bypasses_dense_similarity_threshold():
+    event, req, vector_db, user_prefs, config, _, _ = _make_dependencies(
+        [], threshold=0.9
+    )
+    vector_db.search.return_value = [
+        (
+            SimpleNamespace(
+                text_content="exact sparse knowledge",
+                metadata={"source": "sparse", "_score_type": "sparse_bm25"},
+            ),
+            0.2,
+        )
+    ]
+
+    await enhance_request_with_kb(event, req, vector_db, user_prefs, config)
+
+    assert len(req.extra_user_content_parts) == 1
+    assert "exact sparse knowledge" in req.extra_user_content_parts[0].text
+    assert req.extra_user_content_parts[0]._no_save is True
+
+
+@pytest.mark.asyncio
+async def test_background_results_are_not_written_when_all_scores_fail_threshold():
+    extras = {
+        "background_retrieval": True,
+        "retrieval_query": "busy query",
+        "background_retrieval_results": [],
+    }
+    event, req, vector_db, user_prefs, config, event_extras, _ = _make_dependencies(
+        [0.2], threshold=0.5, extras=extras
+    )
+
+    await enhance_request_with_kb(event, req, vector_db, user_prefs, config)
+
+    assert event_extras["background_retrieval_results"] == []
+    assert req.extra_user_content_parts == []
 
 
 @pytest.mark.asyncio
@@ -75,7 +262,9 @@ def _make_dependencies(scores, threshold=None):
 async def test_enhance_request_filters_by_configured_threshold(
     scores, threshold, included, excluded
 ):
-    event, req, vector_db, user_prefs, config = _make_dependencies(scores, threshold)
+    event, req, vector_db, user_prefs, config, _, _ = _make_dependencies(
+        scores, threshold
+    )
 
     await enhance_request_with_kb(event, req, vector_db, user_prefs, config)
 
@@ -89,7 +278,9 @@ async def test_enhance_request_filters_by_configured_threshold(
 
 @pytest.mark.asyncio
 async def test_enhance_request_skips_injection_when_all_scores_are_filtered():
-    event, req, vector_db, user_prefs, config = _make_dependencies([0.2, 0.49], 0.5)
+    event, req, vector_db, user_prefs, config, _, _ = _make_dependencies(
+        [0.2, 0.49], 0.5
+    )
 
     await enhance_request_with_kb(event, req, vector_db, user_prefs, config)
 

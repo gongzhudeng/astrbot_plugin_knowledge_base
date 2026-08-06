@@ -53,7 +53,7 @@ async def handle_search(
         yield event.plain_result(
             f"正在知识库 '{target_collection}' 中搜索 '{query[:30]}...' (最多{top_k}条)..."
         )
-        search_results = await plugin.vector_db.search(
+        search_results = await plugin.search_documents(
             target_collection, query, top_k=top_k
         )
 

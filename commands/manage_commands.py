@@ -69,7 +69,7 @@ async def handle_delete_collection_logic(
         await confirm_event.send(
             confirm_event.plain_result(f"正在删除知识库 '{collection_name}'...")
         )
-        success = await plugin.vector_db.delete_collection(collection_name)
+        success = await plugin.delete_documents_collection(collection_name)
         if success:
             global_default = get_default_collection_name(plugin, confirm_event)
             updated_prefs = False

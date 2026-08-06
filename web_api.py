@@ -11,6 +11,7 @@ from .utils.file_parser import FileParser, LLM_Config
 from astrbot import logger
 from astrbot.api import AstrBotConfig
 from astrbot.core.config.default import VERSION
+from .core.retrieval import HybridSearchService, maybe_search
 from .core.user_prefs_handler import UserPrefsHandler
 
 
@@ -23,12 +24,14 @@ class KnowledgeBaseWebAPI:
         llm_config: LLM_Config,
         user_prefs_handler: UserPrefsHandler = None,
         plugin_config: AstrBotConfig = None,
+        retrieval_service: HybridSearchService = None,
     ):
         self.vec_db = vec_db
         self.text_splitter = text_splitter
         self.astrbot_context = astrbot_context
         self.user_prefs_handler = user_prefs_handler
         self.plugin_config = plugin_config
+        self.retrieval_service = retrieval_service
 
         if VERSION < "3.5.13":
             raise RuntimeError(
@@ -191,18 +194,24 @@ class KnowledgeBaseWebAPI:
             if not content:
                 raise ValueError("文件内容为空或不支持的格式")
 
-            chunks = self.text_splitter.split_text(
-                text=content, chunk_size=chunk_size, overlap=overlap
+            chunks = self.text_splitter.split_for_ingestion(
+                text=content,
+                source_name=upload_file.filename,
+                chunk_size=chunk_size,
+                overlap=overlap,
             )
             if not chunks:
                 raise Exception("chunk 内容为空")
 
             documents_to_add = [
                 Document(
-                    text_content=chunk,
+                    text_content=chunk.text,
                     metadata={
                         "source": upload_file.filename,
+                        "document_name": upload_file.filename,
+                        "page": None,
                         "user": "astrbot_webui",
+                        **chunk.metadata(),
                     },
                 )
                 for chunk in chunks
@@ -215,9 +224,14 @@ class KnowledgeBaseWebAPI:
                 logger.warning(f"删除临时文件失败: {str(e)}")
 
             try:
-                doc_ids = await self.vec_db.add_documents(
-                    collection_name, documents_to_add
-                )
+                if self.retrieval_service is not None:
+                    doc_ids = await self.retrieval_service.add_documents(
+                        collection_name, documents_to_add
+                    )
+                else:
+                    doc_ids = await self.vec_db.add_documents(
+                        collection_name, documents_to_add
+                    )
                 if not doc_ids:
                     raise Exception("添加文档失败，返回的文档 ID 为空")
                 return (
@@ -263,7 +277,13 @@ class KnowledgeBaseWebAPI:
 
         try:
             # 执行搜索
-            results = await self.vec_db.search(collection_name, query, top_k)
+            results = await maybe_search(
+                self.vec_db,
+                self.retrieval_service,
+                collection_name,
+                query,
+                top_k,
+            )
 
             # 格式化结果以便前端展示
             formatted_results = []
@@ -296,7 +316,10 @@ class KnowledgeBaseWebAPI:
 
         try:
             # 执行删除
-            await self.vec_db.delete_collection(collection_name)
+            if self.retrieval_service is not None:
+                await self.retrieval_service.delete_collection(collection_name)
+            else:
+                await self.vec_db.delete_collection(collection_name)
             return Response().ok(f"删除 {collection_name} 成功").__dict__
         except Exception as e:
             logger.error(f"删除失败: {str(e)}")

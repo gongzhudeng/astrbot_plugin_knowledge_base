@@ -6,7 +6,7 @@
 
 > 作者：灵犀 | 仓库：[astrbot_plugin_knowledge_base](https://github.com/gongzhudeng/astrbot_plugin_knowledge_base) | 主页：[gongzhudeng](https://github.com/gongzhudeng)
 
-> **版本**：v1.0.6
+> **版本**：v1.1.0
 > **插件名**：`astrbot_plugin_knowledge_base`
 
 基于 [lxfight/astrbot_plugin_knowledge_base v0.5.9](https://github.com/lxfight/astrbot_plugin_knowledge_base) 改编，感谢原作者 lxfight 的开源贡献。
@@ -19,7 +19,7 @@
 - **知识库检索**：根据用户消息自动检索相关知识库内容
 - **注入位置调整**：默认注入到用户消息前面，避免破坏 KV Cache 前缀，提高缓存命中率
 - **多种注入方式**：支持用户消息前置注入（推荐）和 system_prompt 注入
-- **相关度过滤**：可配置最低相似度阈值，过滤不相关的内容
+- **混合检索**：默认融合向量召回与本地 BM25 关键词召回；旧集合、索引缺失或索引异常时自动回退到向量检索
 
 ### 知识库管理
 - 支持多个知识库，每个会话可绑定默认知识库

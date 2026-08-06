@@ -560,19 +560,41 @@ class FaissStore(VectorDBBase):
             logger.error(f"无法获取或加载集合 '{collection_name}'，搜索失败。")
             return []
 
-        try:
-            if vecdb.rerank_provider:
+        if vecdb.rerank_provider:
+            try:
                 results = await vecdb.retrieve(
                     query=query_text,
                     k=max(20, top_k),
                     rerank=True,
                 )
                 results = results[:top_k]
-            else:
-                results = await vecdb.retrieve(query=query_text, k=top_k, rerank=False)
-        except Exception as e:
-            logger.error(f"在集合 '{collection_name}' 中搜索时发生错误: {e}")
-            return []
+            except Exception as rerank_error:
+                logger.warning(
+                    f"Faiss 集合 '{collection_name}' 重排序失败，将回退到向量检索: {rerank_error}"
+                )
+                try:
+                    results = await vecdb.retrieve(
+                        query=query_text,
+                        k=top_k,
+                        rerank=False,
+                    )
+                except Exception as dense_error:
+                    logger.error(
+                        f"在集合 '{collection_name}' 中向量检索失败: {dense_error}"
+                    )
+                    return []
+        else:
+            try:
+                results = await vecdb.retrieve(
+                    query=query_text,
+                    k=top_k,
+                    rerank=False,
+                )
+            except Exception as dense_error:
+                logger.error(
+                    f"在集合 '{collection_name}' 中向量检索失败: {dense_error}"
+                )
+                return []
 
         ret = []
         for result in results:

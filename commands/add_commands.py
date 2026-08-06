@@ -43,15 +43,21 @@ async def handle_add_text(
             yield event.plain_result(f"自动创建知识库 '{target_collection}' 失败: {e}")
             return
 
-    chunks = plugin.text_splitter.split_text(content)
+    chunks = plugin.text_splitter.split_for_ingestion(content, "direct_text")
     if not chunks:
         yield event.plain_result("文本分割后无有效内容。")
         return
 
     documents_to_add = [
         Document(
-            text_content=chunk,
-            metadata={"source": "direct_text", "user": event.get_sender_name()},
+            text_content=chunk.text,
+            metadata={
+                "source": "direct_text",
+                "document_name": "direct_text",
+                "page": None,
+                "user": event.get_sender_name(),
+                **chunk.metadata(),
+            },
         )
         for chunk in chunks
     ]
@@ -60,9 +66,7 @@ async def handle_add_text(
         yield event.plain_result(
             f"正在处理 {len(chunks)} 个文本块并添加到知识库 '{target_collection}'..."
         )
-        doc_ids = await plugin.vector_db.add_documents(
-            target_collection, documents_to_add
-        )
+        doc_ids = await plugin.add_documents(target_collection, documents_to_add)
         if doc_ids:
             yield event.plain_result(
                 f"成功添加 {len(doc_ids)} 条知识到 '{target_collection}'。"
@@ -200,7 +204,7 @@ async def handle_add_file(
                     logger.error(f"删除临时文件 {file_path} 失败: {e}")
             continue
 
-        chunks = plugin.text_splitter.split_text(content)
+        chunks = plugin.text_splitter.split_for_ingestion(content, original_filename)
         if not chunks:
             message = f"文件 '{original_filename}' 分割后无有效内容，已跳过。"
             yield event.plain_result(message)
@@ -216,17 +220,21 @@ async def handle_add_file(
         total_chunks_processed += len(chunks)
         documents_to_add = [
             Document(
-                text_content=chunk,
-                metadata={"source": original_filename, "user": event.get_sender_name()},
+                text_content=chunk.text,
+                metadata={
+                    "source": original_filename,
+                    "document_name": original_filename,
+                    "page": None,
+                    "user": event.get_sender_name(),
+                    **chunk.metadata(),
+                },
             )
             for chunk in chunks
         ]
         # yield event.plain_result(f"开始添加文件：{original_filename}")
         logger.info(f"开始添加文件：{original_filename}")
         try:
-            doc_ids = await plugin.vector_db.add_documents(
-                target_collection, documents_to_add
-            )
+            doc_ids = await plugin.add_documents(target_collection, documents_to_add)
             if doc_ids:
                 total_docs_added += len(doc_ids)
         except Exception as e_add:
