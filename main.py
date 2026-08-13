@@ -1,26 +1,24 @@
 # astrbot_plugin_knowledge_base/main.py
-import os
 import asyncio
+import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
 
-from astrbot.api import logger, AstrBotConfig, sp
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
-from astrbot.core.utils.session_waiter import (
-    session_waiter,
-    SessionController,
-)
-from astrbot.core.config.default import VERSION
+from astrbot.api import AstrBotConfig, logger, sp
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import StarTools
-
+from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.core.config.default import VERSION
+from astrbot.core.utils.session_waiter import (
+    SessionController,
+    session_waiter,
+)
 
 from .core import constants
-from .utils.installation import ensure_vector_db_dependencies
-from .utils.embedding import EmbeddingUtil, EmbeddingSolutionHelper
-from .utils.text_splitter import TextSplitterUtil
+from .utils.embedding import EmbeddingSolutionHelper, EmbeddingUtil
 from .utils.file_parser import FileParser, LLM_Config
+from .utils.installation import ensure_vector_db_dependencies
+from .utils.text_splitter import TextSplitterUtil
 from .vector_store.base import Document, VectorDBBase
 
 if VERSION < "3.5.13":
@@ -28,25 +26,25 @@ if VERSION < "3.5.13":
     from .vector_store.faiss_store import FaissStore
 else:
     from .vector_store.astrbot_faiss_store import FaissStore
+from .commands import (
+    add_commands,
+    general_commands,
+    manage_commands,
+    search_commands,
+)
+from .core.llm_enhancer import enhance_request_with_kb
+from .core.retrieval import HybridSearchService, maybe_search
+from .core.user_prefs_handler import UserPrefsHandler
 from .vector_store.milvus_lite_store import MilvusLiteStore
 from .vector_store.milvus_store import MilvusStore
 from .web_api import KnowledgeBaseWebAPI
-from .core.user_prefs_handler import UserPrefsHandler
-from .core.llm_enhancer import enhance_request_with_kb
-from .core.retrieval import HybridSearchService, maybe_search
-from .commands import (
-    general_commands,
-    add_commands,
-    search_commands,
-    manage_commands,
-)
 
 
 @register(
     constants.PLUGIN_REGISTER_NAME,
     "lxfight",
     "一个支持多种向量数据库的知识库插件",
-    "1.1.0",
+    "1.1.1",
     "https://github.com/gongzhudeng/astrbot_plugin_knowledge_base",
 )
 class KnowledgeBasePlugin(Star):
@@ -55,12 +53,12 @@ class KnowledgeBasePlugin(Star):
         self.config = config
         self._initialize_basic_paths()
 
-        self.vector_db: Optional[VectorDBBase] = None
-        self.embedding_util: Optional[EmbeddingSolutionHelper] = None
-        self.text_splitter: Optional[TextSplitterUtil] = None
-        self.file_parser: Optional[FileParser] = None
-        self.user_prefs_handler: Optional[UserPrefsHandler] = None
-        self.retrieval_service: Optional[HybridSearchService] = None
+        self.vector_db: VectorDBBase | None = None
+        self.embedding_util: EmbeddingSolutionHelper | None = None
+        self.text_splitter: TextSplitterUtil | None = None
+        self.file_parser: FileParser | None = None
+        self.user_prefs_handler: UserPrefsHandler | None = None
+        self.retrieval_service: HybridSearchService | None = None
 
         ensure_vector_db_dependencies(self.config.get("vector_db_type", "faiss"))
         self.init_task = asyncio.create_task(self._initialize_components())
@@ -327,7 +325,7 @@ class KnowledgeBasePlugin(Star):
         self,
         event: AstrMessageEvent,
         content: str,
-        collection_name: Optional[str] = None,
+        collection_name: str | None = None,
     ):
         """添加文本内容到知识库。"""
         if not await self._ensure_initialized():
@@ -344,7 +342,7 @@ class KnowledgeBasePlugin(Star):
         self,
         event: AstrMessageEvent,
         path_or_url: str,
-        collection_name: Optional[str] = None,
+        collection_name: str | None = None,
     ):
         """从本地路径或 URL 添加文件内容到知识库。"""
         if not await self._ensure_initialized():
@@ -360,8 +358,8 @@ class KnowledgeBasePlugin(Star):
         self,
         event: AstrMessageEvent,
         query: str,
-        top_k_str: Optional[str] = None,
-        collection_name: Optional[str] = None,
+        top_k_str: str | None = None,
+        collection_name: str | None = None,
     ):
         """在知识库中搜索内容。"""
         if not await self._ensure_initialized():
@@ -434,7 +432,7 @@ class KnowledgeBasePlugin(Star):
         self,
         event: AstrMessageEvent,
         collection_name: str,
-        confirm: Optional[str] = None,
+        confirm: str | None = None,
     ):
         """删除一个知识库及其所有内容 (危险操作! 仅管理员)。"""
         if not await self._ensure_initialized():
@@ -513,7 +511,7 @@ class KnowledgeBasePlugin(Star):
 
     @kb_group.command("count", alias={"数量"})
     async def kb_count_documents(
-        self, event: AstrMessageEvent, collection_name: Optional[str] = None
+        self, event: AstrMessageEvent, collection_name: str | None = None
     ):
         """查看指定知识库的文档数量"""
         if not await self._ensure_initialized():

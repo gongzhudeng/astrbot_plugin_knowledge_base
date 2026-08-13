@@ -1,7 +1,9 @@
-import subprocess
 import importlib
+import subprocess
 from typing import Literal
+
 from astrbot.api import logger
+
 # --- UV 工具查找 ---
 
 
@@ -128,11 +130,6 @@ def ensure_vector_db_dependencies(
     返回:
         bool: 如果所有必需的依赖项都已满足 (已存在或成功安装)，则返回 True；否则返回 False。
     """
-    if not _UV_EXECUTABLE:
-        logger.error("严重错误: UV 工具未找到。无法执行自动依赖安装。")
-        logger.error("          请确保 'uv' 已安装并可从 PATH 访问。")
-        return False
-
     logger.info(f"\n--- 正在为向量数据库类型 '{db_type}' 准备依赖项 ---")
 
     # 1. 检查并安装核心依赖项

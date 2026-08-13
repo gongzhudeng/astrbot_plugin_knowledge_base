@@ -1,22 +1,24 @@
-from typing import Optional
-from astrbot.api import logger
-from astrbot.api.star import Context
-import os
-import base64
-import aiofiles
-from aiofiles.os import stat as aio_stat
-import chardet
 import asyncio
-from ..core.constants import (
-    COMMON_ENCODINGS,
-    READ_FILE_LIMIT,
-    TEXT_EXTENSIONS,
-    IMAGE_EXTENSIONS,
-    MARKITDOWN_EXTENSIONS,
-    AUDIO_EXTENSIONS,
-)
+import base64
+import os
+
+import aiofiles
+import chardet
+from aiofiles.os import stat as aio_stat
 from markitdown_no_magika import MarkItDown
 from openai import AsyncOpenAI, OpenAI
+
+from astrbot.api import logger
+from astrbot.api.star import Context
+
+from ..core.constants import (
+    AUDIO_EXTENSIONS,
+    COMMON_ENCODINGS,
+    IMAGE_EXTENSIONS,
+    MARKITDOWN_EXTENSIONS,
+    READ_FILE_LIMIT,
+    TEXT_EXTENSIONS,
+)
 
 
 class LLM_Config:
@@ -25,29 +27,34 @@ class LLM_Config:
     def __init__(self, context: Context, status: bool):
         self.context = context
         self.status = status
-        provider_config = self.context.get_using_provider()
-        if provider_config is None:
-            logger.error("未在 AstrBot 配置 LLM 服务商，请检查配置")
-            self.status = False
-        if self.status:
-            # 获取当前使用的 provider
-            self.api_key = provider_config.get_current_key()
-            self.api_url = provider_config.provider_config.get("api_base")
-            self.model_name = provider_config.get_model()
 
-            # 初始化 LLM 客户端
-            self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.api_url)
-            self.sync_client = OpenAI(api_key=self.api_key, base_url=self.api_url)
-            # 初始化 MarkItDown
-            self.md_converter = MarkItDown(
-                enable_plugins=True,
-                llm_client=self.async_client,
-                llm_model=self.model_name,
-            )
-            logger.info("配置LLM成功")
-        else:
-            self.md_converter = MarkItDown(enable_plugins=False)
-            logger.warning("未启用 LLM 大模型解析文件，图片和复杂文档解析可能失败")
+        if self.status:
+            provider_config = self.context.get_using_provider()
+            if provider_config is None:
+                logger.error("未在 AstrBot 配置 LLM 服务商，请检查配置")
+                self.status = False
+            else:
+                self.api_key = provider_config.get_current_key()
+                self.api_url = provider_config.provider_config.get("api_base")
+                self.model_name = provider_config.get_model()
+                self.async_client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url=self.api_url,
+                )
+                self.sync_client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.api_url,
+                )
+                self.md_converter = MarkItDown(
+                    enable_plugins=True,
+                    llm_client=self.async_client,
+                    llm_model=self.model_name,
+                )
+                logger.info("配置LLM成功")
+                return
+
+        self.md_converter = MarkItDown(enable_plugins=False)
+        logger.warning("未启用 LLM 大模型解析文件，图片和复杂文档解析可能失败")
 
     """文本文件解析类"""
 
@@ -79,7 +86,7 @@ class LLM_Config:
                     try:
                         # 如果 chardet 成功，用检测到的编码完整读取文件
                         async with aiofiles.open(
-                            file_path, "r", encoding=detected_encoding, errors="ignore"
+                            file_path, encoding=detected_encoding, errors="ignore"
                         ) as f:  # errors='ignore' 或 'replace' 可以增加容错
                             content = await f.read()
                         return content
@@ -114,7 +121,7 @@ class LLM_Config:
         if content is None:
             for enc in COMMON_ENCODINGS:
                 try:
-                    async with aiofiles.open(file_path, "r", encoding=enc) as f:
+                    async with aiofiles.open(file_path, encoding=enc) as f:
                         content = await f.read()
                     logger.info(f"成功使用编码 {enc} 读取文件 {file_path}")
                     return content
@@ -136,7 +143,7 @@ class LLM_Config:
                     f"最终尝试：以 UTF-8 编码（替换错误字符）方式读取文件 {file_path}"
                 )
                 async with aiofiles.open(
-                    file_path, "r", encoding="utf-8", errors="replace"
+                    file_path, encoding="utf-8", errors="replace"
                 ) as f:
                     content = await f.read()
                 return content
@@ -219,7 +226,7 @@ class TextFileParser:
     def __init__(self, llm_config: LLM_Config):
         self._detect_and_read_file = llm_config._detect_and_read_file
 
-    async def parse(self, file_path: str) -> Optional[str]:
+    async def parse(self, file_path: str) -> str | None:
         """
         异步读取并解析文件内容。
 
@@ -246,7 +253,7 @@ class MarkdownFileParser:
     def __init__(self, llm_config: LLM_Config):
         self.md_converter = llm_config.md_converter
 
-    async def parse(self, file_path: str) -> Optional[str]:
+    async def parse(self, file_path: str) -> str | None:
         """解析Markdown文件"""
         try:
             loop = asyncio.get_running_loop()
@@ -276,7 +283,7 @@ class ImageFileParser:
             logger.error(f"图片编码失败 {file_path}: {e}")
             raise
 
-    async def parse(self, file_path: str) -> Optional[str]:
+    async def parse(self, file_path: str) -> str | None:
         """解析图片文件"""
         try:
             loop = asyncio.get_running_loop()
@@ -310,7 +317,7 @@ class AudioFileParser:
             logger.error(f"音频编码失败 {file_path}: {e}")
             raise
 
-    async def parse(self, file_path: str) -> Optional[str]:
+    async def parse(self, file_path: str) -> str | None:
         """解析音频文件"""
         try:
             loop = asyncio.get_running_loop()
@@ -336,7 +343,7 @@ class FileParser:
         self.image_parser = ImageFileParser(llm_config)
         self.audio_parser = AudioFileParser(llm_config)
 
-    async def parse_file_content(self, file_path: str) -> Optional[str]:
+    async def parse_file_content(self, file_path: str) -> str | None:
         """
         异步读取并解析文件内容。
 

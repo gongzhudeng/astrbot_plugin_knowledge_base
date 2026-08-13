@@ -1,18 +1,36 @@
-import os
 import time
 import uuid
-from astrbot.api.star import Context
-from .vector_store.base import VectorDBBase, Document
-from quart import request
-from astrbot.dashboard.server import Response
-from .utils.text_splitter import TextSplitterUtil
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-from .utils.file_parser import FileParser, LLM_Config
+from pathlib import Path
+
 from astrbot import logger
 from astrbot.api import AstrBotConfig
+from astrbot.api.star import Context
+from astrbot.api.web import request
 from astrbot.core.config.default import VERSION
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+
 from .core.retrieval import HybridSearchService, maybe_search
 from .core.user_prefs_handler import UserPrefsHandler
+from .utils.file_parser import FileParser, LLM_Config
+from .utils.text_splitter import TextSplitterUtil
+from .vector_store.base import Document, VectorDBBase
+
+
+class _ResponsePayload:
+    def __init__(self, status: str, message: str | None, data=None):
+        self.status = status
+        self.message = message
+        self.data = data
+
+
+class Response:
+    """Keep the plugin's response envelope stable across AstrBot API versions."""
+
+    def ok(self, data=None, message: str | None = None):
+        return _ResponsePayload("ok", message, {} if data is None else data)
+
+    def error(self, message: str, data=None):
+        return _ResponsePayload("error", message, data)
 
 
 class KnowledgeBaseWebAPI:
@@ -87,7 +105,7 @@ class KnowledgeBaseWebAPI:
         :param collection_name: 集合名称
         :return: 创建结果
         """
-        data = await request.get_json()
+        data = await request.json(default={})
         collection_name = data.get("collection_name")
         emoji = data.get("emoji", "🙂")
         description = data.get("description", "")
@@ -176,10 +194,12 @@ class KnowledgeBaseWebAPI:
         :param documents: 文档列表
         :return: 添加结果
         """
-        upload_file = (await request.files).get("file")
-        collection_name = (await request.form).get("collection_name")
-        chunk_size = (await request.form).get("chunk_size", None)
-        overlap = (await request.form).get("chunk_overlap", None)
+        upload_file = (await request.files()).get("file")
+        form = await request.form()
+        collection_name = form.get("collection_name")
+        chunk_size = form.get("chunk_size", None)
+        overlap = form.get("chunk_overlap", None)
+        path: Path | None = None
         if not upload_file or not collection_name:
             return Response().error("缺少知识库名称").__dict__
         if not await self.vec_db.collection_exists(collection_name):
@@ -188,15 +208,19 @@ class KnowledgeBaseWebAPI:
         try:
             chunk_size = int(chunk_size) if chunk_size else None
             overlap = int(overlap) if overlap else None
-            path = os.path.join(get_astrbot_data_path(), "temp", upload_file.filename)
+            safe_filename = Path(upload_file.filename or "").name
+            if not safe_filename:
+                raise ValueError("上传文件名为空")
+            path = Path(get_astrbot_temp_path()) / f"{uuid.uuid4().hex}_{safe_filename}"
+            path.parent.mkdir(parents=True, exist_ok=True)
             await upload_file.save(path)
-            content = await self.fp.parse_file_content(path)
+            content = await self.fp.parse_file_content(str(path))
             if not content:
                 raise ValueError("文件内容为空或不支持的格式")
 
             chunks = self.text_splitter.split_for_ingestion(
                 text=content,
-                source_name=upload_file.filename,
+                source_name=safe_filename,
                 chunk_size=chunk_size,
                 overlap=overlap,
             )
@@ -207,8 +231,8 @@ class KnowledgeBaseWebAPI:
                 Document(
                     text_content=chunk.text,
                     metadata={
-                        "source": upload_file.filename,
-                        "document_name": upload_file.filename,
+                        "source": safe_filename,
+                        "document_name": safe_filename,
                         "page": None,
                         "user": "astrbot_webui",
                         **chunk.metadata(),
@@ -218,8 +242,8 @@ class KnowledgeBaseWebAPI:
             ]
 
             try:
-                if os.path.exists(path):
-                    os.remove(path)
+                if path and path.exists():
+                    path.unlink()
             except Exception as e:
                 logger.warning(f"删除临时文件失败: {str(e)}")
 
@@ -247,8 +271,8 @@ class KnowledgeBaseWebAPI:
 
         except Exception as e:
             logger.error(f"添加文档失败: {str(e)}")
-            if os.path.exists(path):
-                os.remove(path)
+            if path and path.exists():
+                path.unlink()
             return Response().error(f"添加文档失败: {str(e)}").__dict__
 
     async def search_documents(self):
@@ -260,10 +284,10 @@ class KnowledgeBaseWebAPI:
         :return: 搜索结果
         """
         # 从 URL 参数中获取查询参数
-        collection_name = request.args.get("collection_name")
-        query = request.args.get("query")
+        collection_name = request.query.get("collection_name")
+        query = request.query.get("query")
         try:
-            top_k = int(request.args.get("top_k", 5))
+            top_k = int(request.query.get("top_k", 5))
         except ValueError:
             top_k = 5
 
@@ -308,7 +332,7 @@ class KnowledgeBaseWebAPI:
         :param collection_name: 集合名称
         """
         # 从 URL 参数中获取查询参数
-        collection_name = request.args.get("collection_name")
+        collection_name = request.query.get("collection_name")
 
         # 检查知识库是否存在
         if not await self.vec_db.collection_exists(collection_name):
