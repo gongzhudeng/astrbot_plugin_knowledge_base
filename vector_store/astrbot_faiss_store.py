@@ -1,8 +1,7 @@
-import os
 import asyncio
-import json
 import gc
-from typing import List, Dict, Tuple, Set, Optional
+import json
+import os
 
 # 引入 cachetools 和 Lock, Set, Optional
 try:
@@ -10,16 +9,17 @@ try:
 except ImportError:
     raise ImportError("Please install cachetools: pip install cachetools")
 
-from .base import (
-    VectorDBBase,
-    Document,
-    ProcessingBatch,
-    DEFAULT_BATCH_SIZE,
-)
 from astrbot.api import logger
 from astrbot.core.db.vec_db.faiss_impl import FaissVecDB
 from astrbot.core.provider.provider import EmbeddingProvider
+
 from ..utils.embedding import EmbeddingSolutionHelper
+from .base import (
+    DEFAULT_BATCH_SIZE,
+    Document,
+    ProcessingBatch,
+    VectorDBBase,
+)
 from .faiss_store import FaissStore as OldFaissStore
 
 # 定义默认的缓存大小
@@ -54,7 +54,7 @@ class AstrBotEmbeddingProviderWrapper(EmbeddingProvider):
         self.embedding_util = embedding_util
         self.collection_name = collection_name
 
-    async def get_embedding(self, text: str) -> List[float]:
+    async def get_embedding(self, text: str) -> list[float]:
         vec = await self.embedding_util.get_embedding_async(text, self.collection_name)
         if not vec:
             raise ValueError(
@@ -62,7 +62,7 @@ class AstrBotEmbeddingProviderWrapper(EmbeddingProvider):
             )
         return vec
 
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+    async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
         """批量获取文本的嵌入"""
         vecs = await self.embedding_util.get_embeddings_async(
             texts, self.collection_name
@@ -97,9 +97,9 @@ class FaissStore(VectorDBBase):
         # LRU 缓存，存储 collection_name -> FaissVecDB 实例
         self.cache: LRUCache[str, FaissVecDB] = LRUCache(maxsize=max_cache_size)
         # 记录磁盘上所有已知的新格式集合名称（无论是否加载）
-        self._all_known_collections: Set[str] = set()
+        self._all_known_collections: set[str] = set()
         # 加载锁，防止同一集合并发加载
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         self.max_cache_size = max_cache_size
         self.max_concurrent_batches = max_concurrent_batches
         # 信号量控制并发批次数量
@@ -114,9 +114,9 @@ class FaissStore(VectorDBBase):
         )
         # ------------------------
 
-        self._old_faiss_store: Optional[OldFaissStore] = None
-        self._old_collections: Dict[str, str] = {}  # 记录所有旧格式的集合
-        self.embedding_utils: Dict[str, AstrBotEmbeddingProviderWrapper] = {}
+        self._old_faiss_store: OldFaissStore | None = None
+        self._old_collections: dict[str, str] = {}  # 记录所有旧格式的集合
+        self.embedding_utils: dict[str, AstrBotEmbeddingProviderWrapper] = {}
         os.makedirs(self.data_path, exist_ok=True)
 
     async def initialize(self):
@@ -128,7 +128,7 @@ class FaissStore(VectorDBBase):
             f"Faiss 存储扫描完成。发现新格式集合: {list(self._all_known_collections)}，旧格式集合: {list(self._old_collections.keys())}"
         )
 
-    def _get_collection_meta(self, collection_name: str) -> Tuple[str, str, str, str]:
+    def _get_collection_meta(self, collection_name: str) -> tuple[str, str, str, str]:
         """工具函数：根据集合名获取真实名称, file_id 和路径"""
         true_coll_name = (
             self.embedding_util.user_prefs_handler.get_collection_name_by_file_id(
@@ -223,6 +223,31 @@ class FaissStore(VectorDBBase):
             self._old_faiss_store = OldFaissStore(self.embedding_util, self.data_path)
             await self._old_faiss_store.initialize()
 
+    @staticmethod
+    def _sync_dimension_from_index(vecdb: FaissVecDB, collection_name: str) -> None:
+        """Use the persisted index dimension as the source of truth when loading."""
+        storage = vecdb.embedding_storage
+        persisted_dimension = getattr(storage.index, "d", None)
+        if not isinstance(persisted_dimension, int) or persisted_dimension <= 0:
+            return
+
+        configured_dimension = storage.dimension
+        if configured_dimension == persisted_dimension:
+            return
+
+        storage.dimension = persisted_dimension
+        if configured_dimension in (None, 0):
+            logger.info(
+                f"集合 '{collection_name}' 的运行时嵌入维度无效，"
+                f"已从 FAISS 索引恢复为 {persisted_dimension}。"
+            )
+        else:
+            logger.warning(
+                f"集合 '{collection_name}' 的运行时嵌入维度为 {configured_dimension}，"
+                f"与现有 FAISS 索引维度 {persisted_dimension} 不一致；"
+                "检索和写入将以现有索引维度为准。"
+            )
+
     async def _perform_load(
         self, collection_name: str, index_path: str, storage_path: str
     ) -> FaissVecDB:
@@ -241,6 +266,7 @@ class FaissStore(VectorDBBase):
         if rerank_prov:
             params["rerank_provider"] = rerank_prov
         vecdb = FaissVecDB(**params)
+        self._sync_dimension_from_index(vecdb, collection_name)
         await vecdb.initialize()
         logger.info(f"Faiss 集合实例 '{collection_name}' 加载/创建完成。")
         return vecdb
@@ -288,7 +314,7 @@ class FaissStore(VectorDBBase):
 
     async def _get_or_load_vecdb(
         self, collection_name: str, for_create: bool = False
-    ) -> Optional[FaissVecDB]:
+    ) -> FaissVecDB | None:
         """
         核心函数：从缓存获取或按需加载集合
         1. 检查缓存
@@ -391,7 +417,7 @@ class FaissStore(VectorDBBase):
         batch: ProcessingBatch,
         collection_name: str,
         vecdb: FaissVecDB,
-    ) -> List[str]:
+    ) -> list[str]:
         """
         处理单个批次的任务，使用信号量控制并发。
         注意：此实现逐个插入文档，因为 FaissVecDB.insert 是单个操作。
@@ -434,8 +460,8 @@ class FaissStore(VectorDBBase):
             return all_doc_ids
 
     async def add_documents(
-        self, collection_name: str, documents: List[Document]
-    ) -> List[str]:
+        self, collection_name: str, documents: list[Document]
+    ) -> list[str]:
         """
         向指定集合中添加文档。
         此方法通过并发处理批次来优化速度，并通过分块提交任务来控制内存。
@@ -483,7 +509,7 @@ class FaissStore(VectorDBBase):
         )
 
         tasks = []
-        all_doc_ids: List[str] = []
+        all_doc_ids: list[str] = []
         failed_batches_cnt = 0
 
         for i in range(num_batches):
@@ -537,7 +563,7 @@ class FaissStore(VectorDBBase):
 
     async def search(
         self, collection_name: str, query_text: str, top_k: int = 5
-    ) -> List[Tuple[Document, float]]:
+    ) -> list[tuple[Document, float]]:
         if not await self.collection_exists(collection_name):
             logger.warning(f"Faiss 集合 '{collection_name}' 不存在。")
             return []
@@ -657,7 +683,7 @@ class FaissStore(VectorDBBase):
 
         return await asyncio.to_thread(_delete_sync)
 
-    async def list_collections(self) -> List[str]:
+    async def list_collections(self) -> list[str]:
         """列出所有已知的集合（包括缓存中的、磁盘上未加载的、旧格式的）"""
         # 重新扫描可能更准确，但为了效率，依赖初始化扫描和创建/删除时的维护
         # await self._scan_collections_on_disk()
